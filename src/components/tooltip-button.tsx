@@ -6,8 +6,8 @@ import {
 } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Loader } from "lucide-react";
+import React from "react";
 
-// assuming the button variants types are something like following
 type ButtonVariant =
   | "ghost"
   | "link"
@@ -21,11 +21,11 @@ type ButtonVariant =
 interface TooltipButtonProps {
   content: string;
   icon: React.ReactNode;
-  onClick: () => void;
+  onClick?: () => void;
   buttonVariant?: ButtonVariant;
   buttonClassName?: string;
   delay?: number;
-  disbaled?: boolean;
+  disabled?: boolean;   // ✅ fixed spelling
   loading?: boolean;
 }
 
@@ -36,29 +36,36 @@ export const TooltipButton = ({
   buttonVariant = "ghost",
   buttonClassName = "",
   delay = 0,
-  disbaled = false,
+  disabled = false,
   loading = false,
 }: TooltipButtonProps) => {
+  const isDisabled = disabled || loading;
+
   return (
     <TooltipProvider delayDuration={delay}>
       <Tooltip>
-        <TooltipTrigger
-          className={disbaled ? "cursor-not-allowed" : "cursor-pointer"}
-        >
-          <Button
-            size={"icon"}
-            disabled={disbaled}
-            variant={buttonVariant}
-            className={buttonClassName}
-            onClick={onClick}
+        <TooltipTrigger asChild>
+          <span
+            className={
+              isDisabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+            }
           >
-            {loading ? (
-              <Loader className="min-w-4 min-h-4 animate-spin text-emerald-400" />
-            ) : (
-              icon
-            )}
-          </Button>
+            <Button
+              size="icon"
+              variant={buttonVariant}
+              className={buttonClassName}
+              disabled={isDisabled}
+              onClick={isDisabled ? undefined : onClick}
+            >
+              {loading ? (
+                <Loader className="min-w-4 min-h-4 animate-spin text-emerald-400" />
+              ) : (
+                icon
+              )}
+            </Button>
+          </span>
         </TooltipTrigger>
+
         <TooltipContent>
           <p>{loading ? "Loading..." : content}</p>
         </TooltipContent>

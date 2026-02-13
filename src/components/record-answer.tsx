@@ -6,11 +6,8 @@ import {
   Mic,
   RefreshCw,
   Save,
-  Video,
-  VideoOff,
-  WebcamIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import useSpeechToText from "react-hook-speech-to-text";
 import type { ResultType } from "react-hook-speech-to-text";
 import { useParams } from "react-router-dom";
@@ -18,23 +15,14 @@ import { TooltipButton } from "./tooltip-button";
 import { toast } from "sonner";
 import { chatSession } from "@/scripts";
 import { SaveModal } from "./save-modal";
-import {
-  addDoc,
-  collection,
-  getDocs,
-  query,
-  serverTimestamp,
-  where,
-} from "firebase/firestore";
+import { addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { db } from "@/config/firebase.config";
-
-// ✅ Only Proctoring Camera
 import ProctoringCamera from "@/components/proctoringCamera";
 
+// record-answer.tsx
 interface RecordAnswerProps {
   question: { question: string; answer: string };
-  isWebCam: boolean;
-  setIsWebCam: (value: boolean) => void;
+  onSubmit: (answer: string) => void; // ✅ Correct type
 }
 
 interface AIResponse {
@@ -44,8 +32,7 @@ interface AIResponse {
 
 export const RecordAnswer = ({
   question,
-  isWebCam,
-  setIsWebCam,
+  onSubmit,
 }: RecordAnswerProps) => {
   const {
     interimResult,
@@ -64,46 +51,54 @@ export const RecordAnswer = ({
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  const MIN_RECORD_TIME = 30;
+  const [recordingTime, setRecordingTime] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const { userId } = useAuth();
   const { interviewId } = useParams();
 
-  // Start / Stop Recording
+  // ===== Start / Stop Recording =====
   const recordUserAnswer = async () => {
     if (isRecording) {
       stopSpeechToText();
 
-      if (userAnswer?.length < 30) {
-        toast.error("Error", {
-          description: "Your answer should be more than 30 characters",
-        });
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+
+      if (recordingTime < MIN_RECORD_TIME) {
+        toast.error(`Minimum ${MIN_RECORD_TIME} seconds recording required`);
         return;
       }
 
-      const aiResult = await generateResult(
+      if (userAnswer.trim().length < 30) {
+        toast.error("Your answer should be more than 30 characters");
+        return;
+      }
+
+      const result = await generateResult(
         question.question,
         question.answer,
         userAnswer
       );
 
-      setAiResult(aiResult);
+      setAiResult(result);
     } else {
+      setUserAnswer("");
+      setAiResult(null);
+      setRecordingTime(0);
+
       startSpeechToText();
+
+      timerRef.current = setInterval(() => {
+        setRecordingTime((prev) => prev + 1);
+      }, 1000);
     }
   };
 
-  // Clean AI JSON
-  const cleanJsonResponse = (responseText: string) => {
-    let cleanText = responseText.trim();
-    cleanText = cleanText.replace(/(json|```|`)/g, "");
-
-    try {
-      return JSON.parse(cleanText);
-    } catch (error) {
-      throw new Error("Invalid JSON format");
-    }
-  };
-
-  // Generate AI feedback
+  // ===== AI Feedback =====
   const generateResult = async (
     qst: string,
     qstAns: string,
@@ -120,50 +115,27 @@ Return JSON with fields "ratings" and "feedback".
 `;
 
     try {
-      const aiResult = await chatSession.sendMessage(prompt);
-      const parsedResult: AIResponse = cleanJsonResponse(
-        aiResult.response.text()
-      );
-      return parsedResult;
-    } catch (error) {
-      toast("Error", {
-        description: "Error generating feedback.",
-      });
+      const aiRes = await chatSession.sendMessage(prompt);
+      const text = aiRes.response.text().replace(/(json|```|`)/g, "").trim();
+      return JSON.parse(text);
+    } catch {
+      toast.error("Error generating feedback");
       return { ratings: 0, feedback: "Unable to generate feedback" };
     } finally {
       setIsAiGenerating(false);
     }
   };
 
-  // Record again
-  const recordNewAnswer = () => {
-    setUserAnswer("");
-    stopSpeechToText();
-    startSpeechToText();
-  };
-
-  // Save answer to Firebase
+  // ===== Save Answer =====
   const saveUserAnswer = async () => {
+    if (!aiResult || recordingTime < MIN_RECORD_TIME) {
+      toast.error("Complete minimum recording first");
+      return;
+    }
+
     setLoading(true);
 
-    if (!aiResult) return;
-
     try {
-      const userAnswerQuery = query(
-        collection(db, "userAnswers"),
-        where("userId", "==", userId),
-        where("question", "==", question.question)
-      );
-
-      const querySnap = await getDocs(userAnswerQuery);
-
-      if (!querySnap.empty) {
-        toast.info("Already Answered", {
-          description: "You have already answered this question",
-        });
-        return;
-      }
-
       await addDoc(collection(db, "userAnswers"), {
         mockIdRef: interviewId,
         question: question.question,
@@ -172,108 +144,97 @@ Return JSON with fields "ratings" and "feedback".
         feedback: aiResult.feedback,
         rating: aiResult.ratings,
         userId,
+        attemptAt: serverTimestamp(),
         createdAt: serverTimestamp(),
       });
 
-      toast("Saved", { description: "Your answer has been saved." });
+      toast.success("Answer saved");
 
       setUserAnswer("");
+      setAiResult(null);
+      setRecordingTime(0);
+
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+
       stopSpeechToText();
-    } catch (error) {
-      toast("Error", { description: "Error saving answer." });
+      setOpen(false);
+
+      setTimeout(() => {
+        onSubmit(userAnswer);
+      }, 300);
+    } catch {
+      toast.error("Error saving answer");
     } finally {
       setLoading(false);
-      setOpen(false);
     }
   };
 
-  // Combine speech results
+  // ===== Combine Speech (Final + Live) =====
   useEffect(() => {
-    const combineTranscripts = results
-      .filter((result): result is ResultType => typeof result !== "string")
-      .map((result) => result.transcript)
+    const transcript = results
+      .filter((r): r is ResultType => typeof r !== "string")
+      .map((r) => r.transcript)
       .join(" ");
 
-    setUserAnswer(combineTranscripts);
-  }, [results]);
+    setUserAnswer((transcript + " " + interimResult).trim());
+  }, [results, interimResult]);
 
-return (
-  <div className="w-full flex flex-col items-center gap-8 mt-4">
-    <SaveModal
-      isOpen={open}
-      onClose={() => setOpen(false)}
-      onConfirm={saveUserAnswer}
-      loading={loading}
-    />
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
 
-    {/* Controls */}
-    <div className="flex items-center justify-center gap-3">
-      <TooltipButton
-        content={isWebCam ? "Turn Off" : "Turn On"}
-        icon={
-          isWebCam ? (
-            <VideoOff className="min-w-5 min-h-5" />
-          ) : (
-            <Video className="min-w-5 min-h-5" />
-          )
-        }
-        onClick={() => setIsWebCam(!isWebCam)}
+  return (
+    <div className="w-full flex flex-col items-center gap-8 mt-4">
+      <SaveModal
+        isOpen={open}
+        onClose={() => setOpen(false)}
+        onConfirm={saveUserAnswer}
+        loading={loading}
       />
 
-      <TooltipButton
-        content={isRecording ? "Stop Recording" : "Start Recording"}
-        icon={
-          isRecording ? (
-            <CircleStop className="min-w-5 min-h-5" />
-          ) : (
-            <Mic className="min-w-5 min-h-5" />
-          )
-        }
-        onClick={recordUserAnswer}
-      />
+      <div className="flex items-center justify-center gap-3">
+        <TooltipButton
+          content={isRecording ? "Stop Recording" : "Start Recording"}
+          icon={isRecording ? <CircleStop /> : <Mic />}
+          onClick={recordUserAnswer}
+        />
 
-      <TooltipButton
-        content="Record Again"
-        icon={<RefreshCw className="min-w-5 min-h-5" />}
-        onClick={recordNewAnswer}
-      />
+        <TooltipButton
+          content="Record Again"
+          icon={<RefreshCw />}
+          onClick={recordUserAnswer}
+        />
 
-      <TooltipButton
-        content="Save Result"
-        icon={
-          isAiGenerating ? (
-            <Loader className="min-w-5 min-h-5 animate-spin" />
-          ) : (
-            <Save className="min-w-5 min-h-5" />
-          )
-        }
-        onClick={() => setOpen(true)}
-        disbaled={!aiResult}
-      />
-    </div>
+        <TooltipButton
+          content="Save Result"
+          icon={
+            isAiGenerating ? (
+              <Loader className="animate-spin" />
+            ) : (
+              <Save />
+            )
+          }
+          onClick={() => setOpen(true)}
+          disabled={!aiResult || recordingTime < MIN_RECORD_TIME}
+        />
+      </div>
 
-    {/* Answer Box */}
-    <div className="w-full mt-4 p-4 border rounded-md bg-gray-50">
-      <h2 className="text-lg font-semibold">Your Answer:</h2>
-      <p className="text-sm mt-2 text-gray-700">
-        {userAnswer || "Start recording to see your answer here"}
-      </p>
-
-      {interimResult && (
-        <p className="text-sm text-gray-500 mt-2">
-          <strong>Current Speech:</strong> {interimResult}
+      <div className="w-full mt-4 p-4 border rounded-md bg-gray-50">
+        <h2 className="text-lg font-semibold">Your Answer:</h2>
+        <p className="text-sm mt-2 text-gray-700">
+          {userAnswer || "Start recording to see your answer here"}
         </p>
-      )}
-    </div>
+      </div>
 
-    {/* ✅ Proctoring Camera moved to Bottom */}
-    <div className="w-full h-[300px] md:w-96 flex flex-col items-center justify-center border p-2 bg-gray-50 rounded-md">
-      {isWebCam ? (
+      {/* ✅ Always ON Proctoring Camera */}
+      <div className="w-full h-[300px] md:w-96 flex items-center justify-center border p-2 bg-gray-50 rounded-md">
         <ProctoringCamera />
-      ) : (
-        <WebcamIcon className="min-w-24 min-h-24 text-muted-foreground" />
-      )}
+      </div>
     </div>
-  </div>
-);
-}
+  );
+};

@@ -30,85 +30,69 @@ const ProctoringCamera: React.FC = () => {
     });
 
     faceDetector.onResults((results) => {
-      // No face
       if (!results.detections || results.detections.length === 0) {
         showWarning("⚠️ Face not detected! Stay in front of camera");
         return;
       }
-
-      // Multiple faces
       if (results.detections.length > 1) {
         showWarning("⚠️ Multiple faces detected!");
         return;
       }
 
-      // Face position analysis
       const face = results.detections[0];
       const box = face.boundingBox;
-
       const centerX = box.xCenter;
       const centerY = box.yCenter;
 
-      // Looking left/right/up
       if (centerX < 0.3 || centerX > 0.7 || centerY < 0.3) {
         showWarning("⚠️ Please look at the screen!");
       }
-
-      // Looking down (possible phone usage)
       if (centerY > 0.75) {
         showWarning("⚠️ Don't look down! Possible phone usage");
       }
     });
 
-    // ---------- CAMERA ----------
-    if (videoRef.current) {
-      camera = new Camera(videoRef.current, {
-        onFrame: async () => {
-          if (videoRef.current) {
-            // Camera off / blocked check
-            if (
-              videoRef.current.readyState < 2 ||
-              videoRef.current.videoWidth === 0
-            ) {
-              showWarning("⚠️ Camera turned off or blocked!");
-              return;
-            }
-
-            await faceDetector.send({ image: videoRef.current });
-          }
-        },
-        width: 320,
-        height: 240,
-      });
-
-      camera.start().catch(() => {
+    // ---------- CAMERA AUTO-START ----------
+    const initCamera = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream; // 👈 attach stream
+          camera = new Camera(videoRef.current, {
+            onFrame: async () => {
+              if (videoRef.current) {
+                if (
+                  videoRef.current.readyState < 2 ||
+                  videoRef.current.videoWidth === 0
+                ) {
+                  showWarning("⚠️ Camera turned off or blocked!");
+                  return;
+                }
+                await faceDetector.send({ image: videoRef.current });
+              }
+            },
+            width: 320,
+            height: 240,
+          });
+          await camera.start();
+        }
+      } catch {
         showWarning("⚠️ Camera permission denied!");
-      });
-    }
+      }
+    };
 
-    // ---------- TAB SWITCH ----------
+    initCamera();
+
+    // ---------- TAB / WINDOW EVENTS ----------
     const handleVisibilityChange = () => {
-      if (document.hidden) {
-        showWarning("⚠️ Tab switch detected!");
-      }
+      if (document.hidden) showWarning("⚠️ Tab switch detected!");
     };
-
-    // ---------- WINDOW BLUR / MINIMIZE ----------
-    const handleBlur = () => {
-      showWarning("⚠️ Window changed or minimized!");
-    };
-
-    // ---------- FULLSCREEN EXIT ----------
+    const handleBlur = () => showWarning("⚠️ Window changed or minimized!");
     const handleFullscreenChange = () => {
-      if (!document.fullscreenElement) {
-        showWarning("⚠️ Fullscreen exited!");
-      }
+      if (!document.fullscreenElement) showWarning("⚠️ Fullscreen exited!");
     };
-
-    // ---------- DEVICE CHANGE ----------
-    const handleDeviceChange = () => {
+    const handleDeviceChange = () =>
       showWarning("⚠️ Camera/Microphone device changed!");
-    };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("blur", handleBlur);
@@ -118,27 +102,21 @@ const ProctoringCamera: React.FC = () => {
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("blur", handleBlur);
-      document.removeEventListener(
-        "fullscreenchange",
-        handleFullscreenChange
-      );
-      navigator.mediaDevices.removeEventListener(
-        "devicechange",
-        handleDeviceChange
-      );
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      navigator.mediaDevices.removeEventListener("devicechange", handleDeviceChange);
       if (camera) camera.stop();
     };
   }, []);
 
   return (
-    <div className="flex items-center justify-center rounded-lg overflow-hidden w-full h-full">
-
+    <div className="flex items-start justify-center rounded-lg overflow-hidden w-full h-full">
+      {/* Video hidden from user */}
       <video
         ref={videoRef}
         autoPlay
         muted
         playsInline
-        className="w-40 h-32 rounded-lg border-2 border-red-500 bg-black"
+        style={{ display: "none" }} // 👈 user ko video nahi dikhega
       />
 
       {warning && (
